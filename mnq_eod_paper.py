@@ -41,7 +41,18 @@ def src_databento(start, end, max_cost, symbol='MNQ.v.0', **_):
     cost = c.metadata.get_cost(**kw)
     print(f'databento quoted cost for {start}..{end}: ${cost:.4f}')
     if cost > max_cost: sys.exit(f'Refusing: cost ${cost:.2f} is above --max-cost ${max_cost:.2f}')
-    df = c.timeseries.get_range(**kw).to_df().reset_index()
+    try:
+        store = c.timeseries.get_range(**kw)
+    except Exception as e:                                   # Databento only serves data up to a cutoff slightly behind the clock
+        import re
+        m = re.search(r'before (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)', str(e))
+        if 'dataset_unavailable_range' not in str(e) or not m: raise
+        cutoff = m.group(1); print(f'databento data is only available up to {cutoff}Z; using that as the end (later sessions are picked up on the next run)')
+        if cutoff <= kw['start']: return None
+        kw['end'] = cutoff
+        store = c.timeseries.get_range(**kw)
+    df = store.to_df().reset_index()
+    if df.empty: return None
     ts = pd.to_datetime(df['ts_event'], utc=True).dt.tz_convert(ET).dt.tz_localize(None)
     return pd.DataFrame(dict(ts=ts, o=df.open, h=df.high, l=df.low, c=df.close, v=df.volume, sym=df.get('symbol')))
 
@@ -139,6 +150,7 @@ def main():
         first = (last + timedelta(days=1)) if last else (newest - timedelta(days=a.warmup_days))
         if first > newest: print('nothing new to process'); return
         df = src_databento(first, newest, a.max_cost, a.symbol)
+        if df is None: print('no new complete data available yet; try again later'); return
     else:
         df = src_yahoo()
     skip = roll_skip_dates(newest - timedelta(days=400), newest) if a.source == 'yahoo' else []

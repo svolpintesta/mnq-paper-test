@@ -1,0 +1,4 @@
+databento
+pandas
+tzdata
+yfinance

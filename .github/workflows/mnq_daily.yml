@@ -2,6 +2,7 @@ name: MNQ daily paper test
 on:
   schedule:
     - cron: '45 21 * * 1-5'
+    - cron: '30 11 * * 2-6'
   workflow_dispatch: {}
 permissions:
   contents: write

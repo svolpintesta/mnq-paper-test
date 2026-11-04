@@ -32,11 +32,14 @@ PARAMS = dict(
     ORB=dict(N=15, R=1.5, cap=0.3),
     NR7=dict(N=15, R=2.0, cap=0.3, minstop=3),
     Trend30=dict(m=0.3, K=0.4),
+    ORBR=dict(R=1.5, cap=0.3, tol=0.04, window=12),   # ORB retest variant (shadow track)
 )
 
 # account-rule profiles for the pre-trade gate (same logic as mnq_prop_firm_simulator.py)
 PROFILES = dict(
     LUCID25K_EOD=dict(B0=25000, MLL=1000, lockadd=100, DLL=600, selfstop=360, K=1.5, buf=100, nohedge=True),
+    LUCID50K_EOD=dict(B0=50000, MLL=2000, lockadd=100, DLL=1200, selfstop=720, K=1.5, buf=100, nohedge=True),
+    LUCID100K_EOD=dict(B0=100000, MLL=3000, lockadd=100, DLL=1800, selfstop=1080, K=1.5, buf=100, nohedge=True),
     PRACTICE=dict(B0=50000, MLL=10**6, lockadd=0, DLL=None, selfstop=500, K=0.0, buf=0, nohedge=True),
 )
 
@@ -51,6 +54,11 @@ class RiskGate:
         self.peak = s.get('peak', self.p['B0'])      # highest end-of-day balance
         self.realized = 0.0
         self.halted = False
+
+    def sync_balance(self, bal, have_state):
+        """Start of day: take the broker's closed balance as the truth. peak = highest end-of-day balance we know about."""
+        self.bal0 = float(bal)
+        self.peak = max(self.peak, self.bal0) if have_state else max(self.p['B0'], self.bal0)
 
     def floor(self):
         p = self.p
@@ -271,6 +279,41 @@ class Engine:
 
     def sig_NR7(self, idx):
         p = PARAMS['NR7']; return self._orb(idx, 'NR7', p['R'], p['cap'], p['minstop'], True)
+
+    def sig_ORBR(self, idx):
+        """ORB retest: first 5-min close outside the 15-min range (trend direction only); then wait up to `window` 5-min bars for price to come back to
+        within tol*dr of the broken edge and a 5-min bar to CLOSE back beyond it; enter at the next open. Abandon if price closes back past the far side."""
+        if not self._five(idx) or idx < 14:
+            return None
+        p = PARAMS['ORBR']; s = self.st['ORBR']; k = (idx + 1) // 5 - 1
+        orh = max(self.h[:15]); orl = min(self.l[:15]); c = self.c[idx]
+        if 'd' not in s:                                   # phase 1: look for the first breakout
+            if k > 29:
+                s['done'] = True; return 'none'
+            d = 1 if (c > orh and c > self.vw[idx]) else (-1 if (c < orl and c < self.vw[idx]) else 0)
+            if d == 0:
+                return None
+            if d != self.trend:
+                s['done'] = True; return 'none'
+            s['d'] = d; s['k0'] = k
+            return None
+        d = s['d']; j = k                                   # phase 2: look for the retest
+        if j > s['k0'] + p['window'] or j >= 70:
+            s['done'] = True; return 'none'
+        edge = orh if d == 1 else orl; t = p['tol'] * self.dr
+        if d == 1:
+            if c < orl:
+                s['done'] = True; return 'none'
+            if min(self.l[idx - 4:idx + 1]) <= edge + t and c > edge:
+                s['done'] = True; stop = min(abs(c - orl), p['cap'] * self.dr)
+                return 'none' if stop < 4 else (1, stop + self.cfg['slip'], p['R'] * stop)
+        else:
+            if c > orh:
+                s['done'] = True; return 'none'
+            if max(self.h[idx - 4:idx + 1]) >= edge - t and c < edge:
+                s['done'] = True; stop = min(abs(c - orh), p['cap'] * self.dr)
+                return 'none' if stop < 4 else (-1, stop + self.cfg['slip'], p['R'] * stop)
+        return None
 
     def sig_Trend30(self, idx):
         if idx != 29:

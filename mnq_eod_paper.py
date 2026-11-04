@@ -116,14 +116,14 @@ def notify(text):
         print('telegram failed:', e)
 
 
-def summary(ledger):
+def summary(ledger, note='backtest: avg $28/trade, win 44%, PF 1.38; judge only after 60+ trades'):
     if not ledger.exists(): return 'no trades yet'
     rows = list(csv.DictReader(open(ledger))); p = [float(r['paper_pnl_usd']) for r in rows]
     if not p: return 'no trades yet'
     w = sum(x for x in p if x > 0); l = -sum(x for x in p if x < 0); eq = 0; pk = 0; dd = 0
     for x in p: eq += x; pk = max(pk, eq); dd = min(dd, eq - pk)
     return (f'{len(p)} trades, net ${sum(p):.0f}, win {100 * sum(x > 0 for x in p) / len(p):.0f}%, PF {w / l if l else float("inf"):.2f}, '
-            f'avg ${sum(p) / len(p):.1f}/trade, worst drawdown ${dd:.0f}   (backtest: avg $28/trade, win 44%, PF 1.38; judge only after 60+ trades)')
+            f'avg ${sum(p) / len(p):.1f}/trade, worst drawdown ${dd:.0f}   ({note})')
 
 
 def main():
@@ -133,6 +133,7 @@ def main():
     ap.add_argument('--warmup-days', type=int, default=45, help='calendar days to pull on the very first run (databento)')
     ap.add_argument('--max-cost', type=float, default=1.0, help='abort a databento download that would cost more than this many USD')
     ap.add_argument('--symbol', default='MNQ.v.0')
+    ap.add_argument('--shadow-strategies', default='ORBR', help='second, independent paper track written to ledger_shadow.csv (empty = off). ORBR = ORB retest variant')
     ap.add_argument('--save-bars-for', help='YYYY-MM-DD: only download that one day and save its bars to <workdir>/bars (does not touch the ledger or history)')
     a = ap.parse_args()
     wd = Path(a.workdir); wd.mkdir(parents=True, exist_ok=True)
@@ -168,6 +169,8 @@ def main():
         df = src_yahoo()
     skip = roll_skip_dates(newest - timedelta(days=400), newest) if a.source == 'yahoo' else []
     eng = E.Engine(hist, dict(strategies=a.strategies.split(','), skip_dates=skip), gate)
+    shadow = E.Engine(hist, dict(strategies=a.shadow_strategies.split(','), skip_dates=skip), None) if a.shadow_strategies else None
+    sled = wd / 'ledger_shadow.csv'
     new_rows = 0; lines_out = []
     for d, g in sessions(df):
         if (last and d <= last) or d > newest: continue
@@ -185,6 +188,14 @@ def main():
         if missing >= 3: eng.halted = True
         for i, (o, h, l, c, v) in enumerate(bars): eng.on_bar(i, o, h, l, c, v)
         out = eng.finish_day()
+        if shadow:
+            shadow.new_day(str(d)); shadow.ready = eng.ready and shadow.ready; shadow.reason = eng.reason or shadow.reason; shadow.halted = eng.halted
+            for i, (o, h, l, c, v) in enumerate(bars): shadow.on_bar(i, o, h, l, c, v)
+            sout = shadow.finish_day(); snew = not sled.exists()
+            with open(sled, 'a', newline='') as f:
+                w = csv.writer(f)
+                if snew: w.writerow(['date', 'strategy', 'side', 'entry_bar', 'exit_bar', 'exit_reason', 'paper_pnl_usd'])
+                for t in sout['trades']: w.writerow([d, t['strat'], 'LONG' if t['d'] == 1 else 'SHORT', t['i0'], t['ex'], t['why'], round(t['pnl'], 2)])
         if sym: st['symbol'] = sym
         st['last_date'] = str(d)
         newled = not led.exists()
@@ -195,6 +206,7 @@ def main():
         rep = [f'# EOD paper report {d}', f'- source {a.source}, symbol {sym}, missing bars {missing}',
                f'- engine ready: {out["ready"]} {out["reason"]}', f'- trades {len(out["trades"])}, paper P&L ${out["pnl"]:.2f}']
         rep += [f'  - {t["strat"]} {"LONG" if t["d"] == 1 else "SHORT"} bar {t["i0"]} -> {t["ex"]} ({t["why"]}) ${t["pnl"]:.2f}' for t in out['trades']]
+        if shadow: rep.append(f'- SHADOW track ({a.shadow_strategies}): ' + (', '.join(f'{t["strat"]} {"LONG" if t["d"] == 1 else "SHORT"} bar {t["i0"]}->{t["ex"]} ${t["pnl"]:.2f}' for t in sout['trades']) or 'no trade'))
         (wd / f'report_{d}.md').write_text('\n'.join(rep) + '\n')
         lines_out.append(f'{d}: ' + ('warm-up' if not out['ready'] and 'warming' in out['reason'] else f'{len(out["trades"])} trade(s), ${out["pnl"]:.2f}') +
                          (f' [{out["reason"]}]' if out['reason'] and 'warming' not in out['reason'] else ''))
@@ -202,6 +214,7 @@ def main():
         E.save_history(hist_p, eng.hist); json.dump(st, open(st_p, 'w'))
         if gate: json.dump(gate.state(), open(gate_p, 'w'))
     msg = f'MNQ paper test: {new_rows} new session(s) processed\n' + '\n'.join(lines_out[-8:]) + '\n' + summary(led)
+    if shadow: msg += f'\nSHADOW ({a.shadow_strategies}): ' + summary(sled, 'backtest: PF 1.58, win 54%; judge only after 60+ trades')
     print(msg); notify(msg)
 
 

@@ -133,6 +133,7 @@ def main():
     ap.add_argument('--warmup-days', type=int, default=45, help='calendar days to pull on the very first run (databento)')
     ap.add_argument('--max-cost', type=float, default=1.0, help='abort a databento download that would cost more than this many USD')
     ap.add_argument('--symbol', default='MNQ.v.0')
+    ap.add_argument('--save-bars-for', help='YYYY-MM-DD: only download that one day and save its bars to <workdir>/bars (does not touch the ledger or history)')
     a = ap.parse_args()
     wd = Path(a.workdir); wd.mkdir(parents=True, exist_ok=True)
     hist_p, st_p, led = wd / 'history_days.json', wd / 'eod_state.json', wd / 'ledger.csv'
@@ -140,6 +141,18 @@ def main():
     hist = E.load_history(hist_p)
     gate_p = wd / 'gate_state.json'
     gate = None if a.profile == 'NONE' else E.RiskGate(a.profile, json.load(open(gate_p)) if gate_p.exists() else None)
+    if a.save_bars_for:
+        d0 = date.fromisoformat(a.save_bars_for)
+        df = src_csv(a.file) if a.source == 'csv' else (src_databento(d0, d0, a.max_cost, a.symbol) if a.source == 'databento' else src_yahoo())
+        if df is None: sys.exit('no data returned for that day')
+        for d, g in sessions(df):
+            if d == d0:
+                res, why = build_day(g)
+                if res is None: sys.exit(f'{d}: {why}')
+                (wd / 'bars').mkdir(exist_ok=True)
+                pd.DataFrame(res[0], columns=['open', 'high', 'low', 'close', 'volume']).rename_axis('idx').to_csv(wd / 'bars' / f'bars_{d}.csv')
+                print(f'saved {wd / "bars" / f"bars_{d}.csv"}'); return
+        sys.exit('that day was not in the downloaded data')
     now = datetime.now(ET)
     last = date.fromisoformat(st['last_date']) if st.get('last_date') else None
     today_done = now.hour * 60 + now.minute >= 16 * 60 + 20
@@ -164,6 +177,8 @@ def main():
         bars, missing = res
         sym = None
         if 'sym' in g and g.sym.notna().any(): sym = str(g.sym.dropna().mode().iloc[0])
+        (wd / 'bars').mkdir(exist_ok=True)
+        pd.DataFrame(bars, columns=['open', 'high', 'low', 'close', 'volume']).rename_axis('idx').to_csv(wd / 'bars' / f'bars_{d}.csv')   # kept so any day can be re-verified offline
         eng.new_day(str(d))
         if st.get('symbol') and sym and st['symbol'] != sym:
             eng.ready = False; eng.reason = f'contract changed {st["symbol"]} -> {sym}: no trading today'

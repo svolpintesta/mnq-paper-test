@@ -3,3 +3,4 @@ date,strategy,side,entry_bar,exit_bar,exit_reason,paper_pnl_usd
 2026-11-11,ORBR,SHORT,25,73,S,-364.4
 2026-11-13,ORBR,SHORT,25,40,T,597.6
 2026-11-16,ORBR,SHORT,40,385,X,337.1
+2026-11-17,ORBR,SHORT,45,70,T,450.85

@@ -21,3 +21,4 @@ date,strategy,side,entry_bar,exit_bar,exit_reason,paper_pnl_usd
 2026-11-18,ORB,SHORT,110,173,S,-416.77
 2026-11-19,Gap,LONG,5,10,S,-338.79
 2026-11-20,Gap,SHORT,5,24,S,-327.22
+2026-11-24,Gap,SHORT,5,385,X,150.1
